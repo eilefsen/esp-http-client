@@ -5,9 +5,13 @@ pub struct Config {
     #[default("")]
     wifi_psk: &'static str,
     #[default("")]
-    from_place: &'static str,
+    from_place1: &'static str,
     #[default("")]
-    to_place: &'static str,
+    to_place1: &'static str,
+    #[default("")]
+    from_place2: &'static str,
+    #[default("")]
+    to_place2: &'static str,
 }
 
 fn main() {
