@@ -120,22 +120,24 @@ fn client() -> anyhow::Result<()> {
 		  }}
 		}}
 	  }}
-	}}"#, CONFIG.from_place, CONFIG.to_place);
-	println!("{}",query);
- //    let json = serde_json::json!({"query": query});
- //    let mut request = client.post(url, &headers)?;
- //    request.write_fmt(format_args!("{}", json))?;
- //    let mut response = request.submit()?;
- //    let mut buffer = [0;2048];
- //    response.read(&mut buffer)?;
-	// let c = String::from_utf8_lossy(&buffer);
-	// let content = c.trim_matches('\0');
- //    let response_data: TopLevelData = serde_json::from_str(content)?;
-	// let departures = Departure::from_top_level_data(response_data);
- //    log::info!("Response json: {:?}", departures);
-	//
- //    let status = response.status();
- //    log::info!("Response status code: {}", status);
+	}}"#,
+        CONFIG.from_place, CONFIG.to_place
+    );
+    // println!("{}",query);
+    let json = serde_json::json!({"query": query});
+    let mut request = client.post(url, &headers)?;
+    request.write_fmt(format_args!("{}", json))?;
+    let mut response = request.submit()?;
+    let mut buffer = [0; 2048];
+    response.read(&mut buffer)?;
+    let c = String::from_utf8_lossy(&buffer);
+    let content = c.trim_matches('\0');
+    let response_data: TopLevelData = serde_json::from_str(content)?;
+    let departures = Departure::from_top_level_data(response_data);
+    log::info!("Response json: {:?}", departures);
+
+    let status = response.status();
+    log::info!("Response status code: {}", status);
 
     Ok(())
 }
