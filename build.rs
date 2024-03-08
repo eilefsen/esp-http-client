@@ -4,6 +4,10 @@ pub struct Config {
     wifi_ssid: &'static str,
     #[default("")]
     wifi_psk: &'static str,
+    #[default("")]
+    from_place: &'static str,
+    #[default("")]
+    to_place: &'static str,
 }
 
 fn main() {
