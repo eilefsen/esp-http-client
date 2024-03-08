@@ -32,7 +32,9 @@ heapless = "0.8.0"
 embedded-svc = "0.27.1"
 serde_json = "1.0.114"
 serde = "1.0.197"
-time = {version = "0.3.34", features = ["parsing"]}
+time = {version = "0.3.34", features = ["parsing", "macros"]}
+sh1106 = "0.5.0"
+embedded-graphics = "0.8.1"
 
 
 [build-dependencies]
