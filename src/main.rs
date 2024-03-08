@@ -22,35 +22,6 @@ pub struct Config {
     to_place: &'static str,
 }
 
-impl Departure {
-    fn from_top_level_data(data: TopLevelData) -> Vec<Departure> {
-        Departure::from_trip(data.data.trip)
-    }
-    fn from_trip(trip: Trip) -> Vec<Departure> {
-        trip.trip_patterns
-            .into_iter()
-            .flat_map(|tp| tp.legs)
-            .map(|leg| Departure::from_leg(leg))
-            .collect()
-    }
-    fn from_leg(leg: Leg) -> Departure {
-        let start =
-            OffsetDateTime::parse(leg.expected_start_time.as_str(), &Iso8601::DEFAULT).unwrap();
-        let now = OffsetDateTime::now_utc();
-        let diff = start - now;
-        let minutes = diff.whole_minutes();
-        let leaving = format!(
-            "{} Minutes, {} Seconds",
-            minutes,
-            diff.whole_seconds() - (minutes * 60)
-        );
-        Departure {
-            start_time: start,
-            leaving_in: leaving,
-            line_number: leg.line.public_code,
-        }
-    }
-}
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
@@ -180,6 +151,37 @@ struct Departure {
     leaving_in: String,
     line_number: String,
 }
+impl Departure {
+    fn from_top_level_data(data: TopLevelData) -> Vec<Departure> {
+        Departure::from_trip(data.data.trip)
+    }
+    fn from_trip(trip: Trip) -> Vec<Departure> {
+        trip.trip_patterns
+            .into_iter()
+            .flat_map(|tp| tp.legs)
+            .filter_map(|leg| Departure::from_leg(leg).ok())
+            .collect()
+    }
+    fn from_leg(leg: Leg) -> anyhow::Result<Departure> {
+        let start = OffsetDateTime::parse(leg.expected_start_time.as_str(), &Iso8601::DEFAULT)?;
+        let now = OffsetDateTime::now_utc();
+        log::info!("{}", now);
+        let diff = start - now;
+        let minutes = diff.whole_minutes();
+        let leaving = format!(
+            "{} Minutes, {} Seconds",
+            minutes,
+            diff.whole_seconds() - (minutes * 60)
+        );
+        Ok(Departure {
+            start_time: start,
+            leaving_in: leaving,
+            line_number: leg.line.public_code,
+        })
+    }
+}
+
+fn _esp_wifi_setup(modem: Modem) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
     let mut wifi = BlockingWifi::wrap(EspWifi::new(modem, sysloop.clone(), Some(nvs))?, sysloop)?;
