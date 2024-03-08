@@ -1,14 +1,30 @@
+use std::thread::sleep;
+use std::time::Duration;
+
 use anyhow::{self};
+use embedded_graphics::{
+    mono_font::{ascii::FONT_6X10, MonoTextStyle, MonoTextStyleBuilder},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::Rectangle,
+    text::{Baseline, Text},
+};
 use embedded_svc::http::client::Client;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::i2c::*;
 use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::prelude::*;
 use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
 use esp_idf_svc::io::Write;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::sntp::{self, SyncStatus};
 use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
 use serde::Deserialize;
+use sh1106::{prelude::*, Builder};
 use time::{format_description::well_known::Iso8601, OffsetDateTime};
+
+const SH1106_ADDRESS: u8 = 0x7b;
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -22,6 +38,46 @@ pub struct Config {
     to_place: &'static str,
 }
 
+fn display(
+    departures: Vec<Departure>,
+    display_interface: &mut GraphicsMode<I2cInterface<I2cDriver<'_>>>,
+) -> anyhow::Result<()> {
+    match display_interface.flush() {
+        Ok(_) => (),
+        Err(err) => log::error!("display: flush 1: {:?}", err),
+    };
+    display_interface.fill_solid(&Rectangle::new(Point::zero(), Size::new(128, 64)), BinaryColor::Off)?;
+
+    let text_style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
+        .build();
+
+    for (i, d) in departures.iter().enumerate() {
+        match Text::with_baseline(
+            format!(
+                "{}: {}",
+                d.line_number, d.leaving_in
+            )
+            .as_str(),
+            Point::new(0, i as i32 * 12),
+            text_style,
+            Baseline::Top,
+        )
+        .draw(display_interface)
+        {
+            Ok(_) => (),
+            Err(err) => log::error!("display: draw: {:?}", err),
+        };
+    }
+
+    match display_interface.flush() {
+        Ok(_) => (),
+        Err(err) => log::error!("display: flush 2: {:?}", err),
+    };
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
@@ -30,7 +86,7 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     // Set up WiFi
-    let peripherals = Peripherals::take().unwrap();
+    let peripherals = Peripherals::take()?;
     let _wifi = match _esp_wifi_setup(peripherals.modem) {
         Ok(w) => {
             log::info!("WiFi Successfully Connected!");
@@ -41,15 +97,51 @@ fn main() -> anyhow::Result<()> {
             return Err(err);
         }
     };
+
+    let sntp = sntp::EspSntp::new_default()?;
+    log::info!("SNTP initialized, waiting for status!");
+    while sntp.get_sync_status() != SyncStatus::Completed {}
+    log::info!("SNTP status received!");
+
+    let i2c = peripherals.i2c0;
+    let sda = peripherals.pins.gpio21;
+    let scl = peripherals.pins.gpio22;
+    let config = I2cConfig::new().baudrate(100.kHz().into());
+    let i2c = I2cDriver::new(i2c, sda, scl, &config)?;
+    log::info!("I2C driver configured!");
+
+    log::info!("Initiliazing SH1106 display...");
+    let mut display_interface: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
+    match display_interface.init() {
+        Ok(_) => (),
+        Err(err) => log::error!("display: init: {:?}", err),
+    };
+    log::info!("SH1106 display initialized!");
+
     log::info!("Initialization complete!");
 
     // Start application
-    client()?;
-
-    Ok(())
+    const SLEEP_DURATION: std::time::Duration = Duration::from_secs(20);
+    loop {
+        let departures = match client() {
+            Ok(val) => val,
+            Err(err) => {
+                log::error!("{}", err);
+                log::info!("Sleeping for {} Seconds", SLEEP_DURATION.as_secs());
+                sleep(SLEEP_DURATION);
+                continue;
+            }
+        };
+        match display(departures, &mut display_interface) {
+            Ok(x) => x,
+            Err(err) => log::error!("{}", err),
+        };
+        log::info!("Sleeping for {} Seconds", SLEEP_DURATION.as_secs());
+        sleep(SLEEP_DURATION);
+    }
 }
 
-fn client() -> anyhow::Result<()> {
+fn client() -> anyhow::Result<Vec<Departure>> {
     let cfg = HttpConfig {
         use_global_ca_store: true,
         crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
@@ -103,14 +195,15 @@ fn client() -> anyhow::Result<()> {
     response.read(&mut buffer)?;
     let c = String::from_utf8_lossy(&buffer);
     let content = c.trim_matches('\0');
+
     let response_data: TopLevelData = serde_json::from_str(content)?;
+
     let departures = Departure::from_top_level_data(response_data);
     log::info!("Response json: {:?}", departures);
-
     let status = response.status();
     log::info!("Response status code: {}", status);
 
-    Ok(())
+    Ok(departures)
 }
 
 #[derive(Deserialize, Debug)]
@@ -165,11 +258,12 @@ impl Departure {
     fn from_leg(leg: Leg) -> anyhow::Result<Departure> {
         let start = OffsetDateTime::parse(leg.expected_start_time.as_str(), &Iso8601::DEFAULT)?;
         let now = OffsetDateTime::now_utc();
+
         log::info!("{}", now);
         let diff = start - now;
         let minutes = diff.whole_minutes();
         let leaving = format!(
-            "{} Minutes, {} Seconds",
+            "{} Min, {} Sek",
             minutes,
             diff.whole_seconds() - (minutes * 60)
         );
