@@ -1,14 +1,18 @@
+use serde::Deserialize;
 use std::thread::sleep;
 use std::time::Duration;
+use time::{format_description::well_known::Iso8601, OffsetDateTime};
 
-use anyhow::{self};
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{ascii::{FONT_6X10, FONT_6X13_BOLD}, MonoTextStyle, MonoTextStyleBuilder},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::Rectangle,
     text::{Baseline, Text},
 };
+use sh1106::{prelude::*, Builder};
+
+use anyhow::{self};
 use embedded_svc::http::client::Client;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::i2c::*;
@@ -20,11 +24,6 @@ use esp_idf_svc::io::Write;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sntp::{self, SyncStatus};
 use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
-use serde::Deserialize;
-use sh1106::{prelude::*, Builder};
-use time::{format_description::well_known::Iso8601, OffsetDateTime};
-
-const SH1106_ADDRESS: u8 = 0x7b;
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -41,6 +40,21 @@ pub struct Config {
     #[default("")]
     to_place2: &'static str,
 }
+const NORMAL_TEXT_STYLE: MonoTextStyle<'_, BinaryColor> = MonoTextStyleBuilder::new()
+    .font(&FONT_6X10)
+    .text_color(BinaryColor::On)
+    .background_color(BinaryColor::Off)
+    .build();
+const INVERTED_TEXT_STYLE: MonoTextStyle<'_, BinaryColor> = MonoTextStyleBuilder::new()
+    .font(&FONT_6X10)
+    .text_color(BinaryColor::Off)
+    .background_color(BinaryColor::On)
+    .build();
+const INVERTED_TITLE_TEXT_STYLE: MonoTextStyle<'_, BinaryColor> = MonoTextStyleBuilder::new()
+    .font(&FONT_6X13_BOLD)
+    .text_color(BinaryColor::Off)
+    .background_color(BinaryColor::On)
+    .build();
 
 fn display(
     departures: Vec<Departure>,
@@ -51,20 +65,32 @@ fn display(
         Err(err) => log::error!("display: flush 1: {:?}", err),
     };
     display_interface.fill_solid(
-        &Rectangle::new(Point::zero(), Size::new(64, 128)),
+        &Rectangle::new(Point::new(1, 12), Size::new(64, 112)),
         BinaryColor::Off,
     )?;
 
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(BinaryColor::On)
-        .build();
-
     for (i, d) in departures.iter().enumerate() {
+		{
+			display_interface.fill_solid(
+				&Rectangle::new(Point::new(6, (i as i32 * 12) + 16), Size::new(1, 10)),
+				BinaryColor::On,
+			)?;
+			match Text::with_baseline(
+				format!("{}", d.line_number).as_str(),
+				Point::new(7, (i as i32 * 12) + 16),
+				INVERTED_TEXT_STYLE,
+				Baseline::Top,
+			)
+				.draw(display_interface)
+				{
+					Ok(_) => (),
+					Err(err) => log::error!("display: draw: {:?}", err),
+				};
+		}
         match Text::with_baseline(
-            format!("{}: {}", d.line_number, d.leaving_in).as_str(),
-            Point::new(0, i as i32 * 12),
-            text_style,
+            format!("{: >5}", d.leaving_in).as_str(),
+            Point::new(32, (i as i32 * 12) + 16),
+            NORMAL_TEXT_STYLE,
             Baseline::Top,
         )
         .draw(display_interface)
@@ -115,41 +141,92 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("Initiliazing SH1106 display...");
     let mut display_interface: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
-	match display_interface.set_rotation(DisplayRotation::Rotate90){
+    match display_interface.set_rotation(DisplayRotation::Rotate90) {
         Ok(_) => (),
         Err(err) => log::error!("display: set_rotation: {:?}", err),
     };
-
     match display_interface.init() {
         Ok(_) => (),
         Err(err) => log::error!("display: init: {:?}", err),
     };
+    display_interface.fill_solid(
+        &Rectangle::new(Point::new(0, 0), Size::new(64, 12)),
+        BinaryColor::On,
+    )?;
+    match Text::with_baseline(
+        "LEAVING IN ",
+        Point::new(2, 0 as i32 * 12),
+        INVERTED_TITLE_TEXT_STYLE,
+        Baseline::Top,
+    )
+    .draw(&mut display_interface)
+    {
+        Ok(_) => (),
+        Err(err) => log::error!("display: draw: {:?}", err),
+    };
+
     log::info!("SH1106 display initialized!");
 
     log::info!("Initialization complete!");
 
     // Start application
-    const SLEEP_DURATION: std::time::Duration = Duration::from_secs(20);
+    const SLEEP_SECONDS: u64 = 20;
     loop {
-        let departures = match client() {
+        let data = match client() {
             Ok(val) => val,
             Err(err) => {
                 log::error!("{}", err);
-                log::info!("Sleeping for {} Seconds", SLEEP_DURATION.as_secs());
-                sleep(SLEEP_DURATION);
+                log::info!("Sleeping for {} Seconds", SLEEP_SECONDS);
+                sleep(Duration::from_secs(SLEEP_SECONDS));
                 continue;
             }
         };
-        match display(departures, &mut display_interface) {
-            Ok(x) => x,
-            Err(err) => log::error!("{}", err),
-        };
-        log::info!("Sleeping for {} Seconds", SLEEP_DURATION.as_secs());
-        sleep(SLEEP_DURATION);
+        for _ in 0..(SLEEP_SECONDS * 2) {
+            let departures = Departure::from_top_level_data(data.clone());
+            log::info!("Response json: {:?}", departures);
+            match display(departures, &mut display_interface) {
+                Ok(x) => x,
+                Err(err) => log::error!("{}", err),
+            };
+            sleep(Duration::from_millis(500))
+        }
     }
 }
 
-fn client() -> anyhow::Result<Vec<Departure>> {
+fn client() -> anyhow::Result<TopLevelData> {
+    fn make_query(from: &str, to: &str) -> String {
+        format!(
+            r#"
+			trip(
+				from: {{
+					place: "{}"
+				}},
+				to: {{
+					place: "{}"
+				}},
+				numTripPatterns: 4
+				modes: {{
+					accessMode: foot
+					egressMode: foot
+					transportModes: [{{
+						transportMode: bus
+						transportSubModes: [localBus]
+					}}]
+				}}
+			) {{
+				tripPatterns {{
+					legs {{
+						expectedStartTime
+						line {{
+							publicCode
+						}}
+					}}
+				}}
+			}}
+		"#,
+            from, to
+        )
+    }
     let cfg = HttpConfig {
         use_global_ca_store: true,
         crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
@@ -159,42 +236,18 @@ fn client() -> anyhow::Result<Vec<Departure>> {
     let mut client = Client::wrap(conn);
 
     let url = "https://api.entur.io/journey-planner/v3/graphql";
-    // let url = "http://httpbin.org/post";
     let headers = [
         ("content-type", "application/json"),
         ("ET-Client-Name", "eilefsen-entur_display"),
     ];
     let query = format!(
         r#"{{
-	  trip(
-		from: {{
-		  place: "{}"
-		}},
-		to: {{
-		  place: "{}"
-		}},
-		modes: {{
-		  accessMode: foot
-		  egressMode: foot
-		  transportModes: [{{
-			transportMode: bus
-			transportSubModes: [localBus]
-		  }}]
-		}}
-	  ) {{
-		tripPatterns {{
-		  legs {{
-			expectedStartTime
-			line {{
-			  publicCode
-			}}
-		  }}
-		}}
-	  }}
-	}}"#,
-        CONFIG.from_place, CONFIG.to_place
+			trip1: {}, trip2: {}
+		}}"#,
+        make_query(CONFIG.from_place1, CONFIG.to_place1),
+        make_query(CONFIG.from_place2, CONFIG.to_place2),
     );
-    // println!("{}",query);
+    log::info!("query: {}", query);
     let json = serde_json::json!({"query": query});
     let mut request = client.post(url, &headers)?;
     request.write_fmt(format_args!("{}", json))?;
@@ -203,44 +256,43 @@ fn client() -> anyhow::Result<Vec<Departure>> {
     response.read(&mut buffer)?;
     let c = String::from_utf8_lossy(&buffer);
     let content = c.trim_matches('\0');
-
-    let response_data: TopLevelData = serde_json::from_str(content)?;
-
-    let departures = Departure::from_top_level_data(response_data);
-    log::info!("Response json: {:?}", departures);
+    log::info!("Response content: {:?}", content);
     let status = response.status();
     log::info!("Response status code: {}", status);
 
-    Ok(departures)
+    let response_data: TopLevelData = serde_json::from_str(content)?;
+
+    Ok(response_data)
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct TopLevelData {
     data: Data,
 }
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Data {
-    trip: Trip,
+    trip1: Trip,
+    trip2: Trip,
 }
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Trip {
     trip_patterns: Vec<TripPattern>,
 }
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct TripPattern {
     legs: Vec<Leg>,
 }
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Leg {
     expected_start_time: String,
     line: Line,
 }
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct Line {
     public_code: String,
@@ -254,7 +306,9 @@ struct Departure {
 }
 impl Departure {
     fn from_top_level_data(data: TopLevelData) -> Vec<Departure> {
-        Departure::from_trip(data.data.trip)
+        let mut departures = Departure::from_trip(data.data.trip1);
+        departures.append(&mut Departure::from_trip(data.data.trip2));
+        departures
     }
     fn from_trip(trip: Trip) -> Vec<Departure> {
         trip.trip_patterns
@@ -270,8 +324,9 @@ impl Departure {
         log::info!("{}", now);
         let diff = start - now;
         let leaving = format!(
-            "{} Min",
-            (diff.whole_minutes()),
+            "{}:{:02}",
+            diff.whole_minutes(),
+            diff.whole_seconds() - (diff.whole_minutes() * 60)
         );
         Ok(Departure {
             start_time: start,
