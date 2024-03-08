@@ -1,13 +1,9 @@
-#![feature(byte_slice_trim_ascii)]
-
-use std::io::BufReader;
-
-use anyhow::{self, Result};
+use anyhow::{self};
 use embedded_svc::http::client::Client;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::modem::Modem;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection, Response};
+use esp_idf_svc::http::client::{Configuration as HttpConfig, EspHttpConnection};
 use esp_idf_svc::io::Write;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{BlockingWifi, ClientConfiguration, Configuration, EspWifi};
@@ -25,44 +21,7 @@ pub struct Config {
     #[default("")]
     to_place: &'static str,
 }
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct TopLevelData {
-    data: Data,
-}
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct Data {
-    trip: Trip,
-}
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct Trip {
-    trip_patterns: Vec<TripPattern>,
-}
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct TripPattern {
-    legs: Vec<Leg>,
-}
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct Leg {
-    expected_start_time: String,
-    line: Line,
-}
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-struct Line {
-    public_code: String,
-}
 
-#[derive(Debug)]
-struct Departure {
-    start_time: OffsetDateTime,
-    leaving_in: String,
-    line_number: String,
-}
 impl Departure {
     fn from_top_level_data(data: TopLevelData) -> Vec<Departure> {
         Departure::from_trip(data.data.trip)
@@ -92,8 +51,7 @@ impl Departure {
         }
     }
 }
-
-fn main() -> Result<()> {
+fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise some patches to the runtime
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_svc::sys::link_patches();
@@ -120,7 +78,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn client() -> Result<()> {
+fn client() -> anyhow::Result<()> {
     let cfg = HttpConfig {
         use_global_ca_store: true,
         crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
@@ -135,7 +93,8 @@ fn client() -> Result<()> {
         ("content-type", "application/json"),
         ("ET-Client-Name", "eilefsen-entur_display"),
     ];
-    let query = format!(r#"{{
+    let query = format!(
+        r#"{{
 	  trip(
 		from: {{
 		  place: "{}"
@@ -181,7 +140,44 @@ fn client() -> Result<()> {
     Ok(())
 }
 
-fn _esp_wifi_setup(modem: Modem) -> Result<BlockingWifi<EspWifi<'static>>> {
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct TopLevelData {
+    data: Data,
+}
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Data {
+    trip: Trip,
+}
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Trip {
+    trip_patterns: Vec<TripPattern>,
+}
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct TripPattern {
+    legs: Vec<Leg>,
+}
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Leg {
+    expected_start_time: String,
+    line: Line,
+}
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct Line {
+    public_code: String,
+}
+
+#[derive(Debug)]
+struct Departure {
+    start_time: OffsetDateTime,
+    leaving_in: String,
+    line_number: String,
+}
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
     let mut wifi = BlockingWifi::wrap(EspWifi::new(modem, sysloop.clone(), Some(nvs))?, sysloop)?;
