@@ -46,7 +46,10 @@ fn display(
         Ok(_) => (),
         Err(err) => log::error!("display: flush 1: {:?}", err),
     };
-    display_interface.fill_solid(&Rectangle::new(Point::zero(), Size::new(128, 64)), BinaryColor::Off)?;
+    display_interface.fill_solid(
+        &Rectangle::new(Point::zero(), Size::new(64, 128)),
+        BinaryColor::Off,
+    )?;
 
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
@@ -55,11 +58,7 @@ fn display(
 
     for (i, d) in departures.iter().enumerate() {
         match Text::with_baseline(
-            format!(
-                "{}: {}",
-                d.line_number, d.leaving_in
-            )
-            .as_str(),
+            format!("{}: {}", d.line_number, d.leaving_in).as_str(),
             Point::new(0, i as i32 * 12),
             text_style,
             Baseline::Top,
@@ -112,6 +111,11 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("Initiliazing SH1106 display...");
     let mut display_interface: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
+	match display_interface.set_rotation(DisplayRotation::Rotate90){
+        Ok(_) => (),
+        Err(err) => log::error!("display: set_rotation: {:?}", err),
+    };
+
     match display_interface.init() {
         Ok(_) => (),
         Err(err) => log::error!("display: init: {:?}", err),
@@ -261,11 +265,9 @@ impl Departure {
 
         log::info!("{}", now);
         let diff = start - now;
-        let minutes = diff.whole_minutes();
         let leaving = format!(
-            "{} Min, {} Sek",
-            minutes,
-            diff.whole_seconds() - (minutes * 60)
+            "{} Min",
+            (diff.whole_minutes()),
         );
         Ok(Departure {
             start_time: start,
