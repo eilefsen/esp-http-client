@@ -4,7 +4,10 @@ use std::time::Duration;
 use time::{format_description::well_known::Iso8601, OffsetDateTime};
 
 use embedded_graphics::{
-    mono_font::{ascii::{FONT_6X10, FONT_6X13_BOLD}, MonoTextStyle, MonoTextStyleBuilder},
+    mono_font::{
+        ascii::{FONT_6X10, FONT_6X13_BOLD},
+        MonoTextStyle, MonoTextStyleBuilder,
+    },
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::Rectangle,
@@ -12,7 +15,7 @@ use embedded_graphics::{
 };
 use sh1106::{prelude::*, Builder};
 
-use anyhow::{self};
+use anyhow::anyhow;
 use embedded_svc::http::client::Client;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::i2c::*;
@@ -70,23 +73,23 @@ fn display(
     )?;
 
     for (i, d) in departures.iter().enumerate() {
-		{
-			display_interface.fill_solid(
-				&Rectangle::new(Point::new(6, (i as i32 * 12) + 16), Size::new(1, 10)),
-				BinaryColor::On,
-			)?;
-			match Text::with_baseline(
-				format!("{}", d.line_number).as_str(),
-				Point::new(7, (i as i32 * 12) + 16),
-				INVERTED_TEXT_STYLE,
-				Baseline::Top,
-			)
-				.draw(display_interface)
-				{
-					Ok(_) => (),
-					Err(err) => log::error!("display: draw: {:?}", err),
-				};
-		}
+        {
+            display_interface.fill_solid(
+                &Rectangle::new(Point::new(6, (i as i32 * 12) + 16), Size::new(1, 10)),
+                BinaryColor::On,
+            )?;
+            match Text::with_baseline(
+                format!("{}", d.line_number).as_str(),
+                Point::new(7, (i as i32 * 12) + 16),
+                INVERTED_TEXT_STYLE,
+                Baseline::Top,
+            )
+            .draw(display_interface)
+            {
+                Ok(_) => (),
+                Err(err) => log::error!("display: draw: {:?}", err),
+            };
+        }
         match Text::with_baseline(
             format!("{: >5}", d.leaving_in).as_str(),
             Point::new(32, (i as i32 * 12) + 16),
@@ -290,7 +293,7 @@ struct TripPattern {
 #[serde(rename_all = "camelCase")]
 struct Leg {
     expected_start_time: String,
-    line: Line,
+    line: Option<Line>,
 }
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -328,11 +331,14 @@ impl Departure {
             diff.whole_minutes(),
             diff.whole_seconds() - (diff.whole_minutes() * 60)
         );
-        Ok(Departure {
-            start_time: start,
-            leaving_in: leaving,
-            line_number: leg.line.public_code,
-        })
+        match leg.line {
+            Some(l) => Ok(Departure {
+                start_time: start,
+                leaving_in: leaving,
+                line_number: l.public_code,
+            }),
+            None => Err(anyhow!("Leg line is null")),
+        }
     }
 }
 
